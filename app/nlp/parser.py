@@ -15,6 +15,22 @@ Entity = Literal["videos", "snapshots"]
 Operation = Literal["count", "sum", "distinct_count"]
 Comparison = Literal["none", "gt", "lt", "eq", "gte", "lte"]
 
+_ALLOWED_ENTITY = {"videos", "snapshots"}
+_ALLOWED_OP = {"count", "sum", "distinct_count"}
+_ALLOWED_CMP = {"none", "gt", "lt", "eq", "gte", "lte"}
+
+_FIELD_SYNONYMS = {
+    "views_count": "views",
+    "likes_count": "likes",
+    "comments_count": "comments",
+    "reports_count": "reports",
+    "delta_views_count": "delta_views",
+    "delta_likes_count": "delta_likes",
+    "delta_comments_count": "delta_comments",
+    "delta_reports_count": "delta_reports",
+    "id": "video_id",
+}
+
 # ---------- deterministic number parsing (handles "10 000", "10,000", NBSP)
 _RE_NUM_ANY = re.compile(r"(\d[\d\s\u00A0_.,]*)")
 def _parse_int_human(s: str) -> Optional[int]:
@@ -116,15 +132,30 @@ def _extract_json(text: str) -> dict[str, Any]:
     m = _JSON_OBJ_RE.search(text.strip())
     if not m:
         raise LLMParseError("LLM did not return a JSON object")
-    raw = m.group(0)
-    try:
-        return orjson.loads(raw)
-    except Exception as e:
-        raise LLMParseError(f"Invalid JSON from LLM: {e}") from e
 
-_ALLOWED_ENTITY = {"videos", "snapshots"}
-_ALLOWED_OP = {"count", "sum", "distinct_count"}
-_ALLOWED_CMP = {"none", "gt", "lt", "eq", "gte", "lte"}
+    raw = m.group(0)
+
+    # 1) Remove trailing commas before } or ]
+    #    Example: {"a":1,}  or  {"a":[1,2,],}
+    cleaned = re.sub(r",\s*([}\]])", r"\1", raw)
+
+    # 2) Try strict parse first
+    try:
+        return orjson.loads(cleaned)
+    except Exception as e1:
+        # 3) Extra safety: sometimes model returns multiple objects / junk after JSON
+        #    Try to take the outermost object more carefully
+        try:
+            start = cleaned.find("{")
+            end = cleaned.rfind("}")
+            if start != -1 and end != -1 and end > start:
+                cleaned2 = cleaned[start : end + 1]
+                cleaned2 = re.sub(r",\s*([}\]])", r"\1", cleaned2)
+                return orjson.loads(cleaned2)
+        except Exception:
+            pass
+        raise LLMParseError(f"Invalid JSON from LLM: {e1}") from e1
+
 
 def _validate(obj: dict[str, Any], text: str) -> ParseResult:
     if "error" in obj:
@@ -142,8 +173,17 @@ def _validate(obj: dict[str, Any], text: str) -> ParseResult:
         raise LLMParseError("operation missing/invalid")
     if comparison not in _ALLOWED_CMP:
         raise LLMParseError("comparison missing/invalid")
+
+    # field normalize
+    if isinstance(field, str):
+        field = _FIELD_SYNONYMS.get(field.strip(), field.strip())
+
+    # field default for count
     if not isinstance(field, str) or not field.strip():
-        raise LLMParseError("field missing/invalid")
+        if operation == "count":
+            field = "video_id"
+        else:
+            raise LLMParseError("field missing/invalid")
 
     # creator_id normalize
     creator_id = obj.get("creator_id")
@@ -152,9 +192,8 @@ def _validate(obj: dict[str, Any], text: str) -> ParseResult:
             raise LLMParseError("creator_id must be str or int")
         creator_id = str(creator_id).strip() or None
 
-    # value fallback: if comparison != none and value missing/0 but text has "больше 10 000"
+    # value normalize
     if not isinstance(value, int):
-        # sometimes LLM returns "10000"
         if isinstance(value, str):
             vv = _parse_int_human(value)
             if vv is None:
@@ -163,31 +202,27 @@ def _validate(obj: dict[str, Any], text: str) -> ParseResult:
         else:
             raise LLMParseError("value must be int")
 
-    if comparison != "none" and value == 0:
-        # if it's about "больше N" but value accidentally 0
+    # threshold fallback only for gt/gte
+    if comparison in ("gt", "gte") and value == 0:
         thr = extract_threshold_ru(text)
         if thr is not None:
             value = thr
 
-    # deterministic dates fallback
+    # date fallback
     dates = extract_dates_ru(text)
     date = obj.get("date") or dates.get("date")
     date_from = obj.get("date_from") or dates.get("date_from")
     date_to = obj.get("date_to") or dates.get("date_to")
 
-    # small rule: if text explicitly has ISO range "2025-01-01 до 2025-02-01"
+    # ISO range fallback: "2025-01-01 ... 2025-02-01"
     iso_all = _RE_ISO.findall(text)
     if len(iso_all) >= 2 and (not date_from or not date_to):
         date_from, date_to = iso_all[0], iso_all[1]
 
-    # Basic requiredness (universal)
-    # - videos with creator filter allowed, dates for videos allowed (video_created_at)
-    # - snapshots date is common; if text says exact day, usually we need date.
-    # We don't hard-fail too aggressively; executor will build SQL if enough.
     return ParseResult(
         entity=entity,
         operation=operation,
-        field=field.strip(),
+        field=str(field).strip(),
         comparison=comparison,
         value=int(value),
         creator_id=creator_id,
@@ -195,6 +230,7 @@ def _validate(obj: dict[str, Any], text: str) -> ParseResult:
         date_from=date_from,
         date_to=date_to,
     )
+
 
 async def parse_query(ollama_url: str, model: str, text: str) -> ParseResult:
     llm_out = await ollama_chat(ollama_url, model, text)

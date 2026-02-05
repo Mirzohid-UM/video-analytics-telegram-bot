@@ -61,47 +61,59 @@ CMP_OP = {
     "lte": "<=",
 }
 
+# ... yuqoridagi whitelist/UTC funksiyalar o'zgarishsiz
+
 async def execute_metric(db: DB, pr: ParseResult) -> int:
-    # choose table + columns
     if pr.entity == "videos":
-        table = "videos"
+        base_from = "FROM videos"
         field_map = VIDEO_FIELDS
         time_col = "video_created_at"
+        creator_filter_sql = "creator_id = %s"
     else:
-        table = "video_snapshots"
+        # snapshots
+        # creator_id bo'lsa JOIN qilamiz
+        base_from = "FROM video_snapshots s"
         field_map = SNAPSHOT_FIELDS
-        time_col = "created_at"
+        time_col = "s.created_at"
+        creator_filter_sql = "v.creator_id = %s"
 
     col = field_map.get(pr.field)
     if not col:
         raise ValueError(f"Unsupported field: {pr.field}")
 
-    # select expression
+    # snapshots uchun col prefiksi
+    if pr.entity == "snapshots":
+        if col in ("video_id",):
+            col_expr = f"s.{col}"
+        else:
+            col_expr = f"s.{col}"
+    else:
+        col_expr = col  # videos already
+
+    # select
     if pr.operation == "count":
         select = "COUNT(*)::bigint"
     elif pr.operation == "distinct_count":
         if pr.field != "video_id":
-            # distinct makes sense mostly for video_id
             raise ValueError("distinct_count requires field=video_id")
-        select = f"COUNT(DISTINCT {col})::bigint"
+        select = f"COUNT(DISTINCT {col_expr})::bigint"
     elif pr.operation == "sum":
-        # sum only numeric cols (especially delta_*)
-        select = f"COALESCE(SUM(COALESCE({col},0)),0)::bigint"
+        select = f"COALESCE(SUM(COALESCE({col_expr},0)),0)::bigint"
     else:
         raise ValueError(f"Unsupported operation: {pr.operation}")
 
     where = []
-    params: list[Any] = []
+    params = []
 
-    # filters: creator_id only for videos
+    # creator filter
+    join = ""
     if pr.creator_id is not None:
-        if pr.entity != "videos":
-            # snapshots don't have creator_id directly (unless you join; keep it simple)
-            raise ValueError("creator_id filter only supported for videos")
-        where.append("creator_id = %s")
+        if pr.entity == "snapshots":
+            join = " JOIN videos v ON v.id = s.video_id"
+        where.append(creator_filter_sql)
         params.append(pr.creator_id)
 
-    # date / period filters
+    # date filters
     if pr.date:
         start, end = _to_utc_day_bounds(pr.date)
         where.append(f"{time_col} >= %s")
@@ -113,15 +125,15 @@ async def execute_metric(db: DB, pr: ParseResult) -> int:
         where.append(f"{time_col} <  %s")
         params.extend([start, end])
 
-    # comparison on the chosen field
+    # comparison
     if pr.comparison != "none":
         op = CMP_OP.get(pr.comparison)
         if not op:
             raise ValueError(f"Unsupported comparison: {pr.comparison}")
-        where.append(f"COALESCE({col},0) {op} %s")
+        where.append(f"COALESCE({col_expr},0) {op} %s")
         params.append(int(pr.value))
 
-    sql = f"SELECT {select} FROM {table}"
+    sql = f"SELECT {select} {base_from}{join}"
     if where:
         sql += " WHERE " + " AND ".join(where)
 
