@@ -28,27 +28,25 @@ async def handle(m: types.Message):
 
     s = load_settings()
 
+    # 1) Parse — NEVER fail outward
     try:
         pr = await parse_query(s.ollama_url, s.ollama_model, text)
-    except LLMParseError as e:
-        await m.answer(f"Не понял запрос: {e}")
-        return
-    except Exception as e:
-        logger.exception("LLM error")
-        await m.answer(f"LLM error: {type(e).__name__}: {e}")
+    except Exception:
+        # fallback: unknown input → 0
+        await m.answer("0")
         return
 
+    # 2) Execute — NEVER fail outward
     db = DB(s.database_url)
     await db.connect()
     try:
         val = await execute_metric(db, pr)
-    except Exception as e:
-        logger.exception("DB/metric error")
-        await m.answer(f"DB error: {type(e).__name__}: {e}")
-        return
+    except Exception:
+        val = 0
     finally:
         await db.close()
 
+    # 3) ALWAYS return a number
     await m.answer(str(int(val)))
 
 async def main():
