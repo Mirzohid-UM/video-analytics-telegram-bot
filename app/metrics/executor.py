@@ -48,6 +48,9 @@ async def execute_metric(db: DB, pr: ParseResult) -> int:
         val = await db.fetchval(sql)
         return int(val or 0)
 
+    if metric == "count_videos_by_creator_over_views_all_time":
+        val = await db.fetchval(sql, (pr.creator_id, pr.threshold))
+        return int(val or 0)
     if metric == "count_videos_by_creator_period":
         start, end = _period_bounds_iso(pr.date_from, pr.date_to)  # type: ignore[arg-type]
         val = await db.fetchval(sql, (pr.creator_id, start, end))

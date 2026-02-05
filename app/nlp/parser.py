@@ -9,6 +9,7 @@ import orjson
 
 from app.nlp.prompts import SYSTEM_PROMPT
 
+_RE_NUM = re.compile(r"(\d[\d\s\u00A0_.,]*)")
 
 _JSON_OBJ_RE = re.compile(r"\{.*\}", re.DOTALL)
 
@@ -16,6 +17,7 @@ ALLOWED_METRICS = {
     "count_videos_total",
     "count_videos_by_creator_period",
     "count_videos_over_views_all_time",
+    "count_videos_by_creator_over_views_all_time",
     "sum_delta_views_on_date",
     "count_videos_with_new_views_on_date",
 }
@@ -43,7 +45,7 @@ def _extract_json(text: str) -> dict[str, Any]:
     except Exception as e:
         raise LLMParseError(f"Invalid JSON from LLM: {e}") from e
 
-def _validate(obj: dict[str, Any]) -> ParseResult:
+def _validate(obj: dict[str, Any], text: str) -> ParseResult:
     if "error" in obj:
         raise LLMParseError(str(obj["error"]))
 
@@ -51,7 +53,6 @@ def _validate(obj: dict[str, Any]) -> ParseResult:
     if metric not in ALLOWED_METRICS:
         raise LLMParseError("Unknown or missing metric")
 
-    # basic type checks
     creator_id = obj.get("creator_id")
     if creator_id is not None:
         if not isinstance(creator_id, (str, int)):
@@ -61,6 +62,11 @@ def _validate(obj: dict[str, Any]) -> ParseResult:
             raise LLMParseError("creator_id empty")
 
     threshold = obj.get("threshold")
+
+    # ✅ NEW: fallback extract from RU text (handles "10 000")
+    if threshold is None:
+        threshold = extract_threshold_ru(text)
+
     if threshold is not None and not isinstance(threshold, int):
         raise LLMParseError("threshold must be int")
 
@@ -68,13 +74,18 @@ def _validate(obj: dict[str, Any]) -> ParseResult:
     date_to = obj.get("date_to")
     date = obj.get("date")
 
-    # required fields per metric
     if metric == "count_videos_by_creator_period":
         if creator_id is None or not date_from or not date_to:
             raise LLMParseError("creator_id/date_from/date_to required")
+
     if metric == "count_videos_over_views_all_time":
         if threshold is None:
             raise LLMParseError("threshold required")
+
+    if metric == "count_videos_by_creator_over_views_all_time":
+        if creator_id is None or threshold is None:
+            raise LLMParseError("creator_id/threshold required")
+
     if metric in ("sum_delta_views_on_date", "count_videos_with_new_views_on_date"):
         if not date:
             raise LLMParseError("date required")
@@ -88,10 +99,12 @@ def _validate(obj: dict[str, Any]) -> ParseResult:
         threshold=threshold,
     )
 
+
 async def parse_query(ollama_url: str, model: str, text: str) -> ParseResult:
     llm_out = await ollama_chat(ollama_url, model, text)
     obj = _extract_json(llm_out)
-    return _validate(obj)
+    return _validate(obj, text)
+
 
 async def ollama_chat(
     ollama_url: str,
@@ -116,3 +129,25 @@ async def ollama_chat(
         r.raise_for_status()
         data = r.json()
         return data["response"]
+
+
+
+def _parse_int_human(s: str) -> int | None:
+    s = s.replace("\u00A0", " ")
+    s = s.strip()
+    if not s:
+        return None
+    s = re.sub(r"[ \t_.,]", "", s)
+    return int(s) if s.isdigit() else None
+
+def extract_threshold_ru(text: str) -> int | None:
+    t = text.lower().replace("\u00A0", " ")
+    for pat in [
+        r"(?:больше|более)\s+([0-9][0-9\s\u00A0_.,]*)",
+        r">\s*([0-9][0-9\s\u00A0_.,]*)",
+    ]:
+        m = re.search(pat, t)
+        if m:
+            return _parse_int_human(m.group(1))
+    m = _RE_NUM.search(t)
+    return _parse_int_human(m.group(1)) if m else None

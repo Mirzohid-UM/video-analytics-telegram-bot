@@ -38,7 +38,11 @@ METRICS (строго из списка):
    REQUIRED: date (YYYY-MM-DD)
    (подсчёт делается по SUM(video_snapshots.delta_views_count) за эту дату)
 
-5) "count_videos_with_new_views_on_date"
+5) "count_videos_by_creator_over_views_all_time"
+   - сколько видео у креатора набрало больше N просмотров по итоговой статистике
+   REQUIRED: creator_id, threshold (int)
+
+6) "count_videos_with_new_views_on_date"
    - сколько разных видео получали новые просмотры в заданную дату
    REQUIRED: date (YYYY-MM-DD)
    (COUNT(DISTINCT video_id) WHERE delta_views_count > 0 за эту дату)
@@ -53,7 +57,7 @@ METRICS (строго из списка):
 Формат ответа:
 {
   "metric": "...",
-  "creator_id": 123,        // если нужно
+  "creator_id": string,        // если нужно
   "date_from": "YYYY-MM-DD",// если нужно
   "date_to": "YYYY-MM-DD",  // если нужно
   "date": "YYYY-MM-DD",     // если нужно
@@ -75,4 +79,8 @@ METRICS (строго из списка):
 
 Вопрос: "Сколько разных видео получали новые просмотры 27 ноября 2025?"
 Ответ: {"metric":"count_videos_with_new_views_on_date","date":"2025-11-27"}
+
+Вопрос: "Сколько видео у креатора с id aca1061a9d324ecf8c3fa2bb32d7be63 набрали больше 10 000 просмотров по итоговой статистике?"
+Ответ: {"metric":"count_videos_by_creator_over_views_all_time","creator_id":"aca1061a9d324ecf8c3fa2bb32d7be63","threshold":10000}
+
 """.strip()

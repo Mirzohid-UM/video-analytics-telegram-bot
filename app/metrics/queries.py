@@ -32,4 +32,12 @@ SQL = {
           AND created_at <  %s
           AND delta_views_count > 0
     """,
+
+    "count_videos_by_creator_over_views_all_time": """
+     SELECT COUNT(*)::bigint
+     FROM videos
+     WHERE creator_id = %s
+       AND views_count > %s
+""",
+
 }
