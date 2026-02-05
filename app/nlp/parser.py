@@ -360,11 +360,21 @@ def _validate_and_normalize(obj: dict[str, Any], text: str) -> ParseResult:
 
     # HARD OVERRIDE: publication-date queries must use videos.video_created_at
     t_pub = text.lower()
-    if any(w in t_pub for w in ["опубликовал", "опубликован", "дата публикации"]):
+    # --- publication period queries (COUNT vs SUM) ---
+    if any(w in t_pub for w in ["опубликовал", "опубликован", "дата публикации", "опубликованные"]):
+        # default: COUNT videos
+        op = "count"
+        field = "video_id"
+
+        # BUT: "суммарное количество просмотров" → SUM views
+        if "суммар" in t_pub and "просмотр" in t_pub:
+            op = "sum"
+            field = "views"
+
         return ParseResult(
             entity="videos",
-            operation="count",
-            field="video_id",
+            operation=op,
+            field=field,
             comparison="none",
             value=0,
             creator_id=creator_id,
@@ -372,7 +382,6 @@ def _validate_and_normalize(obj: dict[str, Any], text: str) -> ParseResult:
             date_from=date_from,
             date_to=date_to,
         )
-
 
     return pr
 
