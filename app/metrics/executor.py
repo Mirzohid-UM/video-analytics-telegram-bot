@@ -50,16 +50,16 @@ async def execute_metric(db: DB, pr: ParseResult) -> int:
 
     if metric == "count_videos_by_creator_period":
         start, end = _period_bounds_iso(pr.date_from, pr.date_to)  # type: ignore[arg-type]
-        val = await db.fetchval(sql, pr.creator_id, start, end)
+        val = await db.fetchval(sql, (pr.creator_id, start, end))
         return int(val or 0)
 
     if metric == "count_videos_over_views_all_time":
-        val = await db.fetchval(sql, pr.threshold)
+        val = await db.fetchval(sql, (pr.threshold,))
         return int(val or 0)
 
     if metric in ("sum_delta_views_on_date", "count_videos_with_new_views_on_date"):
         start, end = _day_bounds_iso(pr.date)  # type: ignore[arg-type]
-        val = await db.fetchval(sql, start, end)
+        val = await db.fetchval(sql, (start, end))
         return int(val or 0)
 
     raise ValueError(f"Unhandled metric: {metric}")
